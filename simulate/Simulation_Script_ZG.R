@@ -73,22 +73,26 @@ Sim <- function(populations = 10, generations = 11, p0 = 0.5, popsize = 200,
 
     return(evoSimNew)
 }
+
+out_dir <- "data"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
 #generate 5000 data sets for strong, constant selection, samples a ~ +- .2
 for (i in 1:5000){
   data <- Sim(10,11,0.5,popsize=200,samplesize=200,h=0.5,a=rbeta(1,10,40)*sample(c(-1,1),1),b=0)
-  write.table(data, paste0("Type1DataSet_", i,".csv"),
+  write.table(data, file = file.path(out_dir, paste0("Type1DataSet_", i,".csv")),
             col.names = F, row.names = F)
 }
 #generate 5000 data sets for strong, fluctuating selection, a = 0 (no directional), b ~ +- .3
 for (i in 1:5000){
   data <- Sim(10,11,0.5,popsize=200,samplesize=200,h=0.5,a=0,b=rbeta(1,15,35)*sample(c(-1,1),1))
-  write.table(data, paste0("NewType2DataSet_", i,".csv"),
+  write.table(data, file = file.path(out_dir, paste0("NewType2DataSet_", i,".csv")),
             col.names = F, row.names = F)
 }
 #generate 5000 data sets for pure drift
 for (i in 1:5000){
   data <- Sim(10,11,0.5,popsize=200,samplesize=200,h=0.5,a=0,b=0)
-  write.table(data, paste0("NewType3DataSet_", i,".csv"),
+  write.table(data, file = file.path(out_dir, paste0("NewType3DataSet_", i,".csv")),
             col.names = F, row.names = F)
 }
 
