@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+BASE_DIR=`pwd`
+SPATPG_DIR="${BASE_DIR}/spatpg"
+cd "${SPATPG_DIR}"
+
 # --- config (you can override via flags/env) ---
 RUN_PL="${RUN_PL:-runSims.pl}"
 QNEMO_BIN_DEFAULT="${QNEMO_BIN_DEFAULT:-quantinemo}"  # e.g. quantinemo | quantiNemo | quantiNemo2
