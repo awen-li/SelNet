@@ -1,4 +1,7 @@
 #!/usr/bin/perl
+use File::Path qw(make_path);
+
+my $qbin = $ENV{QNEMO_BIN} // 'quantinemo';   # or 'quantiNemo2' / 'quantiNemo'
 
 # wrapper script for quantiNemo
 # generates selection file, runs quantiNemo, and extracts necessary output
@@ -149,7 +152,9 @@ for($i=9; $i<$nreps; $i++){
     print SIM "stat_dir                  stats\n";
 
     close(SIM);
-    system "quantiNemo fluct$i.ini\n";
+    #system "quantiNemo fluct$i.ini\n";
+    my $rc = system("$qbin fluct$i.ini");
+    die "quantiNemo run failed for replicate $i (exit ".($? >> 8).")\n" if $rc != 0;
 
     ## grab genotypic values
     open (OUT, "> simout$i"."/breedingval.txt") or die "failed to write OUT\n";
