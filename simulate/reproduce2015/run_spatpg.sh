@@ -25,10 +25,10 @@ QNEMO_SIMS_DIR="${QNEMO_SIMS_DIR:-spatpg/qnemosims}"
 WF_SIMS_DIR="${WF_SIMS_DIR:-spatpg/wfsims}"
 BAYES_OUT_DIR="${BAYES_OUT_DIR:-spatpg/spatpg_out}"
 
-# Add a model knob (2015 paper uses env / temp models)
+# Optional model knob; we'll only add "-m" if this spatpg supports it.
 SPATPG_MODEL="${SPATPG_MODEL:-env}"  # e.g., env|const|temp
-SPATPG_ARGS_TEMPLATE="${SPATPG_ARGS_TEMPLATE:- -g {GENO} -e {ENV} -o {OUT} -m ${SPATPG_MODEL} -n 20000 -b 5000 -t 10 -l 20 -u 4000 -p 0.05 }"
-echo "==> Using spatpg args: $SPATPG_ARGS_TEMPLATE"
+# If you pass --args later, that will override this auto-built template.
+SPATPG_ARGS_TEMPLATE="${SPATPG_ARGS_TEMPLATE:-}"
 
 DO_SIM=1
 DO_CHECK=1
@@ -52,14 +52,13 @@ Options:
   --qnemo DIR path to qnemosims (default: ${QNEMO_SIMS_DIR})
   --wf DIR    path to wfsims     (default: ${WF_SIMS_DIR})
   --out DIR   spatpg outputs dir (default: ${BAYES_OUT_DIR})
-  --args STR  spatpg arg template (overrides SPATPG_ARGS_TEMPLATE env)
+  --args STR  spatpg arg template (overrides auto template)
   --model M   spatpg model (env|const|temp), default: ${SPATPG_MODEL}
   --no-sim    skip quantiNemo/Perl pipeline
   --no-check  skip quick sanity checks
   --no-bayes  skip spatpg runs
   --no-figs   skip point-estimate figures
   --no-bayes-figs  skip posterior-figure extraction
-  -o USER:GRP chown -R outputs (optional)
   -h | --help show this help
 EOF
 }
@@ -115,8 +114,22 @@ echo "==> spatpg bin:     $(command -v "$SPATPG_BIN" 2>/dev/null || echo '(skipp
 echo "==> Perl wrapper:    $RUN_PL"
 echo "==> Workdir:         $(pwd)"
 
-# Optional: reproducible seeds (if your Perl wrapper supports it)
+# Optional: reproducible seeds
 export QNEMO_SEED="${QNEMO_SEED:-12345}"
+
+# ---------- Build spatpg args template if not provided ----------
+if [[ -z "${SPATPG_ARGS_TEMPLATE}" && $DO_BAYES -eq 1 ]]; then
+  supports_model_flag=0
+  # Ask the binary for its usage; many builds print to stderr when called without args
+  if "$SPATPG_BIN" 2>&1 | grep -qE -- '(^|[[:space:]])-m([[:space:]]|$)'; then
+    supports_model_flag=1
+  fi
+  SPATPG_ARGS_TEMPLATE="-g {GENO} -e {ENV} -o {OUT} -n 20000 -b 5000 -t 10 -l 20 -u 4000 -p 0.05"
+  if [[ $supports_model_flag -eq 1 ]]; then
+    SPATPG_ARGS_TEMPLATE="$SPATPG_ARGS_TEMPLATE -m ${SPATPG_MODEL}"
+  fi
+fi
+echo "==> Using spatpg args template: ${SPATPG_ARGS_TEMPLATE:-'(none — bayes skipped)'}"
 
 # ---------- 1) Run quantiNemo + Perl ----------
 if [[ $DO_SIM -eq 1 ]]; then
@@ -178,7 +191,9 @@ run_spatpg_pair() {
   local args; args="$(tmpl "$SPATPG_ARGS_TEMPLATE" "$GENO" "$ENV" "$OUT")"
   echo "   [spatpg] $SPATPG_BIN $args"
   set +e
-  "$SPATPG_BIN" $args 2> "${OUT%.h5}.log"
+  # Split args safely into an array and execute
+  read -r -a argv <<< "$args"
+  "$SPATPG_BIN" "${argv[@]}" 2> "${OUT%.h5}.log"
   local rc=$?
   set -e
   if [[ $rc -ne 0 ]]; then
