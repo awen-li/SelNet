@@ -1,47 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_DIR=`pwd`
+# ---------- Paths / Build ----------
+BASE_DIR="$(pwd)"
 SPATPG_DIR="${BASE_DIR}/spatpg"
 
+# Prefer a local bin dir to avoid /usr/bin installs and path confusion
+LOCAL_BIN="${BASE_DIR}/.local/bin"
+mkdir -p "${LOCAL_BIN}"
+export PATH="${LOCAL_BIN}:$PATH"
+
 if ! command -v spatpg >/dev/null 2>&1; then
-  echo "==> Building spatpg from source"
-  cd $SPATPG_DIR/source && make && cp spatpg /usr/bin/ && cd ../../
+  echo "==> Building spatpg from source (local install)"
+  ( cd "$SPATPG_DIR/source" && make )
+  cp -f "$SPATPG_DIR/source/spatpg" "${LOCAL_BIN}/"
 fi
 
-# =========================
-# Config (overridable)
-# =========================
+# ---------- Config ----------
 RUN_PL="${RUN_PL:-spatpg/runSims.pl}"
-QNEMO_BIN_DEFAULT="${QNEMO_BIN_DEFAULT:-quantinemo}"   # quantiNemo executable name
-SPATPG_BIN_DEFAULT="${SPATPG_BIN_DEFAULT:-spatpg}"     # spatpg executable name
+QNEMO_BIN_DEFAULT="${QNEMO_BIN_DEFAULT:-quantinemo}"
+SPATPG_BIN_DEFAULT="${SPATPG_BIN_DEFAULT:-spatpg}"
 
-# Where Dryad-style sims live (if present)
 QNEMO_SIMS_DIR="${QNEMO_SIMS_DIR:-spatpg/qnemosims}"
 WF_SIMS_DIR="${WF_SIMS_DIR:-spatpg/wfsims}"
-
-# Where to deposit Bayesian outputs
 BAYES_OUT_DIR="${BAYES_OUT_DIR:-spatpg/spatpg_out}"
 
-# How to call spatpg.
-#   {GENO} -> path to genotype time-series file
-#   {ENV}  -> path to environment file
-#   {OUT}  -> output file (HDF5 recommended)
-SPATPG_ARGS_TEMPLATE='-g {GENO} -e {ENV} -o {OUT} -n 20000 -b 5000 -t 10 -l 20 -u 4000 -p 0.05'
+# Add a model knob (2015 paper uses env / temp models)
+SPATPG_MODEL="${SPATPG_MODEL:-env}"  # e.g., env|const|temp
+SPATPG_ARGS_TEMPLATE="${SPATPG_ARGS_TEMPLATE:- -g {GENO} -e {ENV} -o {OUT} -m ${SPATPG_MODEL} -n 20000 -b 5000 -t 10 -l 20 -u 4000 -p 0.05 }"
 echo "==> Using spatpg args: $SPATPG_ARGS_TEMPLATE"
 
-# Flags (default behavior)
-DO_SIM=1            # run quantiNemo/Perl pipeline
-DO_CHECK=1          # quick sanity checks
-DO_BAYES=1          # run spatpg if available
-DO_FIGS=1           # run figure script (point-estimate figs)
-DO_BAYES_FIGS=1     # try to extract posteriors (needs R + hdf5r)
+DO_SIM=1
+DO_CHECK=1
+DO_BAYES=1
+DO_FIGS=1
+DO_BAYES_FIGS=1
 
-OWNER_GROUP="${OWNER_GROUP:-}"   # e.g. "assl:assl" to chown after run
+# If available, auto-disable posterior figs when hdf5r is missing
+if ! R -q -e 'quit(status=!requireNamespace("hdf5r", quietly=TRUE))' >/dev/null 2>&1; then
+  DO_BAYES_FIGS=0
+fi
 
-# =========================
-# Helpers
-# =========================
 usage() {
   cat <<EOF
 Usage: $0 [options]
@@ -54,21 +53,17 @@ Options:
   --wf DIR    path to wfsims     (default: ${WF_SIMS_DIR})
   --out DIR   spatpg outputs dir (default: ${BAYES_OUT_DIR})
   --args STR  spatpg arg template (overrides SPATPG_ARGS_TEMPLATE env)
+  --model M   spatpg model (env|const|temp), default: ${SPATPG_MODEL}
   --no-sim    skip quantiNemo/Perl pipeline
   --no-check  skip quick sanity checks
   --no-bayes  skip spatpg runs
   --no-figs   skip point-estimate figures
   --no-bayes-figs  skip posterior-figure extraction
-  -o USER:GRP chown -R on outputs (optional)
+  -o USER:GRP chown -R outputs (optional)
   -h | --help show this help
-
-Examples:
-  $0 -b quantiNemo2 -s /usr/local/bin/spatpg --args '-g {GENO} -e {ENV} -o {OUT} -m env -n 1000'
-  QNEMO_BIN=quantiNemo2 SPATPG_ARGS_TEMPLATE='--geno {GENO} --env {ENV} --out {OUT} --model env' $0
 EOF
 }
 
-# replace placeholders in template
 tmpl() {
   local tpl="$1" GENO="$2" ENV="$3" OUT="$4"
   tpl="${tpl//\{GENO\}/${GENO}}"
@@ -79,9 +74,7 @@ tmpl() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# =========================
-# Parse args
-# =========================
+# ---------- Parse args ----------
 QNEMO_BIN="$QNEMO_BIN_DEFAULT"
 SPATPG_BIN="$SPATPG_BIN_DEFAULT"
 
@@ -94,34 +87,27 @@ while [[ $# -gt 0 ]]; do
     --wf) WF_SIMS_DIR="$2"; shift 2 ;;
     --out) BAYES_OUT_DIR="$2"; shift 2 ;;
     --args) SPATPG_ARGS_TEMPLATE="$2"; shift 2 ;;
+    --model) SPATPG_MODEL="$2"; shift 2 ;;
     --no-sim) DO_SIM=0; shift ;;
     --no-check) DO_CHECK=0; shift ;;
     --no-bayes) DO_BAYES=0; shift ;;
     --no-figs) DO_FIGS=0; shift ;;
     --no-bayes-figs) DO_BAYES_FIGS=0; shift ;;
-    -o) OWNER_GROUP="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1"; usage; exit 1 ;;
   esac
 done
 
-# =========================
-# Preflight
-# =========================
+# ---------- Preflight ----------
 command -v perl >/dev/null || { echo "ERROR: perl not found"; exit 1; }
 command -v R >/dev/null    || { echo "ERROR: R not found"; exit 1; }
 
-# quantiNemo (optional if --no-sim)
 if [[ $DO_SIM -eq 1 ]]; then
-  have "$QNEMO_BIN" || { echo "ERROR: cannot find '$QNEMO_BIN' (quantiNemo). Use -b."; exit 1; }
+  have "$QNEMO_BIN" || { echo "ERROR: cannot find '$QNEMO_BIN'"; exit 1; }
 fi
 
-# spatpg (optional if --no-bayes)
 if [[ $DO_BAYES -eq 1 ]]; then
-  if ! have "$SPATPG_BIN"; then
-    echo "WARN: spatpg binary '$SPATPG_BIN' not found; skipping Bayesian stage."
-    DO_BAYES=0
-  fi
+  have "$SPATPG_BIN" || { echo "WARN: spatpg not found; skipping Bayesian stage."; DO_BAYES=0; }
 fi
 
 echo "==> quantiNemo bin: $(command -v "$QNEMO_BIN" 2>/dev/null || echo '(skipped)')"
@@ -129,76 +115,80 @@ echo "==> spatpg bin:     $(command -v "$SPATPG_BIN" 2>/dev/null || echo '(skipp
 echo "==> Perl wrapper:    $RUN_PL"
 echo "==> Workdir:         $(pwd)"
 
-# =========================
-# 1) Run quantiNemo + Perl pipeline
-# =========================
+# Optional: reproducible seeds (if your Perl wrapper supports it)
+export QNEMO_SEED="${QNEMO_SEED:-12345}"
+
+# ---------- 1) Run quantiNemo + Perl ----------
 if [[ $DO_SIM -eq 1 ]]; then
-  export QNEMO_BIN   # your Perl script reads QNEMO_BIN if you added that support
+  export QNEMO_BIN
+  echo "==> Running Perl wrapper: $RUN_PL"
   perl "$RUN_PL"
   echo "==> Perl wrapper finished."
 fi
 
-# Fix ownership (optional)
-if [[ -n "$OWNER_GROUP" ]]; then
-  echo "==> chown -R ${OWNER_GROUP} on spatpg/simout*/ (if present)"
-  chown -R "$OWNER_GROUP" spatpg/simout* 2>/dev/null || true
-fi
+# Find newest complete replicate dir by mtime and presence of key files
+pick_latest_dir() {
+  local candidates
+  IFS=$'\n' read -r -d '' -a candidates < <(ls -dt spatpg/simout*/ 2>/dev/null | tr -d '\r' && printf '\0' || true)
+  for d in "${candidates[@]:-}"; do
+    d="${d%/}"
+    for f in fitness.txt quantiGenotypes.txt ntrlGenotypes.txt; do
+      [[ -s "${d}/${f}" ]] || { continue 2; }
+    done
+    echo "$d"; return 0
+  done
+  return 1
+}
 
-# latest replicate dir (if exists)
 LATEST_DIR=""
-if ls -d spatpg/simout*/ >/dev/null 2>&1; then
-  LATEST_DIR="$(ls -d spatpg/simout*/ | sed 's:/$::' | sort -V | tail -n1)"
-  echo "==> Latest replicate: ${LATEST_DIR}"
+if LATEST_DIR="$(pick_latest_dir)"; then
+  echo "==> Latest complete replicate: ${LATEST_DIR}"
+else
+  echo "NOTE: No complete simout* directory found."
 fi
 
-# =========================
-# 2) Quick sanity checks
-# =========================
-if [[ $DO_CHECK -eq 1 && -n "$LATEST_DIR" ]]; then
+# ---------- 2) Quick sanity checks ----------
+if [[ $DO_CHECK -eq 1 && -n "${LATEST_DIR}" ]]; then
   echo "==> Quick sanity check on ${LATEST_DIR}"
   for f in fitness.txt quantiGenotypes.txt ntrlGenotypes.txt quantiDp.txt ntrlDp.txt; do
     if [[ -f "${LATEST_DIR}/${f}" ]]; then
-      echo -n "lines ${LATEST_DIR}/${f}: "
-      wc -l "${LATEST_DIR}/${f}" | awk '{print $1}'
+      printf "lines %-28s: %s\n" "${f}" "$(wc -l < "${LATEST_DIR}/${f}")"
     else
-      echo "MISSING: ${LATEST_DIR}/${f}"
+      echo "MISSING: ${f}"
     fi
   done
 fi
 
-# =========================
-# 3) Run point-estimate figures (your make_figures.R)
-# =========================
+# ---------- 3) Point-estimate figures (R) ----------
 if [[ $DO_FIGS -eq 1 ]]; then
-  if [[ -f make_figures.R ]]; then
-    echo "==> Running make_figures.R (point-estimate visuals)"
-    Rscript make_figures.R || true
+  if [[ -f make_figures.R && -n "${LATEST_DIR}" ]]; then
+    echo "==> Running make_figures.R with explicit input dir"
+    Rscript make_figures.R --in "${LATEST_DIR}" --out "figures" || true
   else
-    echo "NOTE: make_figures.R not found; skipping point-estimate figures."
+    echo "NOTE: make_figures.R not found or no LATEST_DIR; skipping."
   fi
 fi
 
-# =========================
-# 4) Run spatpg on Dryad-style sims (if present)
-# =========================
+# ---------- 4) Run spatpg on Dryad sims ----------
 run_spatpg_pair() {
   local GENO="$1" ENV="$2" OUT="$3"
   mkdir -p "$(dirname "$OUT")"
+  if [[ ! -s "$GENO" ]]; then echo "WARN: empty/missing GENO: $GENO"; return; fi
+  if [[ ! -s "$ENV"  ]]; then echo "WARN: empty/missing ENV:  $ENV";  return; fi
   local args; args="$(tmpl "$SPATPG_ARGS_TEMPLATE" "$GENO" "$ENV" "$OUT")"
   echo "   [spatpg] $SPATPG_BIN $args"
   set +e
-  $SPATPG_BIN $args
+  "$SPATPG_BIN" $args 2> "${OUT%.h5}.log"
   local rc=$?
   set -e
   if [[ $rc -ne 0 ]]; then
-    echo "WARN: spatpg failed on GENO=$(basename "$GENO") ENV=$(basename "$ENV") (exit $rc)"
+    echo "WARN: spatpg failed on $(basename "$GENO") / $(basename "$ENV") (exit $rc)"
   fi
 }
 
 if [[ $DO_BAYES -eq 1 ]]; then
   mkdir -p "$BAYES_OUT_DIR"
 
-  # ---- QUANTINEMO sims (from Dryad) ----
   if [[ -d "$QNEMO_SIMS_DIR" ]]; then
     echo "==> Running spatpg on qnemosims: $QNEMO_SIMS_DIR"
     for i in $(seq 0 9); do
@@ -212,82 +202,98 @@ if [[ $DO_BAYES -eq 1 ]]; then
     echo "NOTE: qnemosims dir not found at $QNEMO_SIMS_DIR (skip)."
   fi
 
-  # ---- Wright–Fisher sims (from Dryad) ----
   if [[ -d "$WF_SIMS_DIR" ]]; then
     echo "==> Running spatpg on wfsims: $WF_SIMS_DIR"
-    # Expect pairs like geno_*.txt + env_*.txt; adjust glob if your names differ
+    shopt -s nullglob
     for GENO in "$WF_SIMS_DIR"/geno_*.txt; do
-      [[ -f "$GENO" ]] || continue
-      base="$(basename "$GENO" .txt | sed 's/^geno_//')"
+      base="$(basename "$GENO" .txt)"; base="${base#geno_}"
       ENVF="$WF_SIMS_DIR/env_${base}.txt"
       [[ -f "$ENVF" ]] || { echo "WARN: no env for $GENO"; continue; }
       OUT="${BAYES_OUT_DIR}/wf_${base}.h5"
       run_spatpg_pair "$GENO" "$ENVF" "$OUT"
     done
+    shopt -u nullglob
   else
     echo "NOTE: wfsims dir not found at $WF_SIMS_DIR (skip)."
   fi
 fi
 
-# =========================
-# 5) OPTIONAL: Extract posterior medians + 95% intervals from spatpg HDF5
-#     and draw Fig.3/5-style panels (requires R + hdf5r)
-# =========================
+# ---------- 5) Posterior extraction (R + hdf5r) ----------
 if [[ $DO_BAYES -eq 1 && $DO_BAYES_FIGS -eq 1 ]]; then
-  if R -q -e 'quit(status=!requireNamespace("hdf5r", quietly=TRUE))' >/dev/null 2>&1; then
-    echo "==> Extracting spatpg posteriors (R + hdf5r) and making Fig.3/5-like panels"
-    Rscript - <<'RS'
+  echo "==> Extracting spatpg posteriors to figures/"
+  Rscript - <<'RS'
 dir.create("figures", showWarnings = FALSE)
-library(hdf5r)
+suppressMessages({
+  library(hdf5r)
+})
 
-# collect all H5 results
 h5s <- Sys.glob(file.path("spatpg/spatpg_out", "*.h5"))
 if (length(h5s) == 0) quit(save="no")
 
-# minimal reader (adapt to your file layout if keys differ)
-read_summary <- function(h5) {
-  f <- H5File$new(h5, mode="r")
-  on.exit(f$close_all())
-  # The group/dataset names may differ; these are common patterns:
-  # a_median, a_q05, a_q95, b_median, b_q05, b_q95, st_median, st_q05, st_q95
-  out <- list()
-  for (nm in c("a_median","a_q05","a_q95","b_median","b_q05","b_q95")) {
-    if (f$exists(nm)) out[[nm]] <- f[[nm]]$read()
+list_keys <- function(f) {
+  walk <- function(g, pref="") {
+    kids <- g$ls()$name
+    out <- character()
+    for (k in kids) {
+      obj <- g[[k]]
+      nm  <- paste0(pref, k)
+      if (inherits(obj, "H5Group")) out <- c(out, walk(obj, paste0(nm, "/")))
+      else out <- c(out, nm)
+    }
+    out
   }
-  # Per-time selection (vector per locus, or matrix [locus x time])
-  for (nm in c("st_median","st_q05","st_q95","s_t_median","s_t_q05","s_t_q95")) {
-    if (f$exists(nm)) out[[nm]] <- f[[nm]]$read()
-  }
-  out
+  walk(f)
 }
 
-summ <- lapply(h5s, read_summary)
+read_first_available <- function(f, names) {
+  for (nm in names) {
+    if (f$exists(nm)) return(f[[nm]]$read())
+  }
+  NULL
+}
 
-# Fig.5-like (many loci): we need b medians and intervals
-bmed <- lapply(summ, `[[`, "b_median")
-bq05 <- lapply(summ, `[[`, "b_q05")
-bq95 <- lapply(summ, `[[`, "b_q95")
+b_all <- list(); lo_all <- list(); hi_all <- list()
+for (h in h5s) {
+  f <- H5File$new(h, mode="r")
+  on.exit(f$close_all(), add=TRUE)
 
-# Flatten and plot if we have something
-if (any(lengths(bmed) > 0)) {
-  b <- unlist(bmed, use.names=FALSE)
-  lo <- unlist(bq05, use.names=FALSE)
-  hi <- unlist(bq95, use.names=FALSE)
+  # Common historical variants for 'b' (fluctuating selection)
+  b <- read_first_available(f, c(
+    "b_median", "posterior/b_median", "summary/b_median"
+  ))
+  bq05 <- read_first_available(f, c(
+    "b_q05", "posterior/b_q05", "summary/b_q05"
+  ))
+  bq95 <- read_first_available(f, c(
+    "b_q95", "posterior/b_q95", "summary/b_q95"
+  ))
+
+  if (is.null(b) || is.null(bq05) || is.null(bq95)) {
+    message("NOTE: Could not find b-marginals in: ", h, " (available keys:)")
+    print(list_keys(f))
+    next
+  }
+
+  b_all[[h]]  <- as.numeric(b)
+  lo_all[[h]] <- as.numeric(bq05)
+  hi_all[[h]] <- as.numeric(bq95)
+}
+
+if (length(b_all)) {
+  b  <- unlist(b_all, use.names=FALSE)
+  lo <- unlist(lo_all, use.names=FALSE)
+  hi <- unlist(hi_all, use.names=FALSE)
   idx <- seq_along(b)
 
-  png("figures/Fig5_spatpg_posteriors.png", width=1600, height=420, res=140)
+  png("figures/Fig_b_posteriors.png", width=1600, height=420, res=140)
   par(mar=c(4,4,2,1))
-  plot(idx, b, type="n", xlab="Parameter number", ylab="Selection coefficient (posterior)")
+  plot(idx, b, type="n", xlab="Parameter index", ylab="b (posterior)")
   abline(h=0, lty=2)
   segments(idx, lo, idx, hi, col=gray(0.6))
-  points(idx, b, pch=16, cex=0.5)
+  points(idx, b, pch=16, cex=0.6)
   dev.off()
 }
-
 RS
-  else
-    echo "NOTE: R package 'hdf5r' not installed; skipping posterior extraction/figures."
-  fi
 fi
 
 echo "==> Done."
